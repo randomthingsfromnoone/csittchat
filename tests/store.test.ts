@@ -63,3 +63,93 @@ test('storage scan cleans records not held in the UI cache', async () => {
   assert.equal(store.messages.size, 0);
   assert.deepEqual(removed, [nodeId(message)]);
 });
+
+test('room history reads the graph even when the global cache has no message', async () => {
+  const now = Date.now();
+  const message: MessageRecord = { kind: 'message', id: crypto.randomUUID(), roomId: 'main', authorId: crypto.randomUUID(), authorName: 'Alice', text: 'existing history', createdAt: now, expiresAt: now + MESSAGE_TTL };
+  let receive: (e: MapEvent) => void = () => {};
+  const db = {
+    async map(options: { query?: { roomId?: string } }, callback?: (e: MapEvent) => void) {
+      if (options.query?.roomId === 'main') {
+        receive = callback!;
+        return { results: [{ id: nodeId(message), value: message }], unsubscribe() {} };
+      }
+      return { results: [] };
+    },
+  } as unknown as GDB;
+  const store = new ChatStore(db, () => {}, () => {});
+  await store.start();
+  assert.equal(store.messages.size, 0);
+  await store.watchRoom('main');
+  assert.equal(store.historyState, 'ready');
+  assert.deepEqual(store.visibleMessages('main', now), [message]);
+  receive({ id: nodeId(message), value: null, action: 'removed', timestamp: now, edges: [] });
+  assert.deepEqual(store.visibleMessages('main', now), []);
+});
+
+test('switching rooms discards late snapshots and unsubscribes old history', async () => {
+  const now = Date.now();
+  const message: MessageRecord = { kind: 'message', id: crypto.randomUUID(), roomId: 'main', authorId: crypto.randomUUID(), authorName: 'Alice', text: 'old room history', createdAt: now, expiresAt: now + MESSAGE_TTL };
+  let resolveOld: (value: unknown) => void = () => {};
+  let unsubscribed = false;
+  const db = {
+    async map() { return new Promise(resolve => { resolveOld = resolve; }); },
+  } as unknown as GDB;
+  const store = new ChatStore(db, () => {}, () => {});
+  const pending = store.watchRoom('main');
+  await store.watchRoom(null);
+  resolveOld({ results: [{ id: nodeId(message), value: message }], unsubscribe() { unsubscribed = true; } });
+  await pending;
+  assert.equal(unsubscribed, true);
+  assert.equal(store.historyState, 'ready');
+  assert.deepEqual(store.visibleMessages('main', now), []);
+});
+
+test('history recovery forwards existing records without extending TTL or resurrecting deletions', async () => {
+  const now = Date.now();
+  const room: RoomRecord = { kind: 'room', id: crypto.randomUUID(), creator: crypto.randomUUID(), title: 'Existing room', createdAt: now, expiresAt: now + ROOM_TTL, lastActivityAt: now };
+  const message: MessageRecord = { kind: 'message', id: crypto.randomUUID(), roomId: room.id, authorId: room.creator, authorName: 'Gone author', text: 'Held by another participant', createdAt: now, expiresAt: now + MESSAGE_TTL };
+  const deleted = { ...message, id: crypto.randomUUID() };
+  const expired = { ...message, id: crypto.randomUUID(), createdAt: now - MESSAGE_TTL, expiresAt: now };
+  const unknownRoom = { ...message, id: crypto.randomUUID(), roomId: crypto.randomUUID() };
+  const invalid = { ...message, id: crypto.randomUUID(), text: 'x'.repeat(2001) };
+  const records = [room, message, deleted, expired, unknownRoom, invalid];
+  const graph = new Map(records.filter(r => r !== deleted).map(r => [nodeId(r), r]));
+  const delivered = new Map<string, unknown>();
+  const db = {
+    async map(options: { query: { kind: string } }) {
+      return { results: records.filter(r => r.kind === options.query.kind).map(value => ({ id: nodeId(value), value })) };
+    },
+    async get(id: string) { return { result: graph.has(id) ? { id, value: graph.get(id) } : null }; },
+    async put(value: unknown, id: string) { delivered.set(id, structuredClone(value)); return id; },
+  } as unknown as GDB;
+  const store = new ChatStore(db, () => {}, () => {});
+  await store.republishHistory();
+  await store.republishHistory();
+  assert.deepEqual([...delivered.entries()], [[nodeId(room), room], [nodeId(message), message]]);
+  store.stop();
+  delivered.clear();
+  await store.republishHistory();
+  assert.equal(delivered.size, 0);
+});
+
+test('peer joins coalesce into two recovery attempts and stop cancels pending work', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const store = new ChatStore({} as GDB, () => {}, () => {});
+  const replay = t.mock.method(store, 'republishHistory', async () => {});
+  store.scheduleHistoryRecovery();
+  t.mock.timers.tick(1000);
+  store.scheduleHistoryRecovery();
+  t.mock.timers.tick(4999);
+  assert.equal(replay.mock.callCount(), 0);
+  t.mock.timers.tick(1);
+  assert.equal(replay.mock.callCount(), 1);
+  t.mock.timers.tick(15000);
+  assert.equal(replay.mock.callCount(), 2);
+  t.mock.timers.tick(60000);
+  assert.equal(replay.mock.callCount(), 2);
+  store.scheduleHistoryRecovery();
+  store.stop();
+  t.mock.timers.tick(60000);
+  assert.equal(replay.mock.callCount(), 2);
+});

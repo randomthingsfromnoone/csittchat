@@ -10,7 +10,7 @@ export default defineConfig({
   webServer: {
     command: 'npm run build && npm run preview -- --port 4173 --strictPort --base /csittchat/',
     url: 'http://127.0.0.1:4173/csittchat/',
-    env: { VITE_CHAT_NETWORK: `ephemeral-pub-test-${process.pid}` },
+    env: { VITE_CHAT_NETWORK: `ephemeral-pub-test-${process.pid}`, VITE_GDB_DEBUG: process.env.VITE_GDB_DEBUG || '0' },
     reuseExistingServer: false,
   },
 });

@@ -15,21 +15,32 @@ const button = (text: string, className = '') => {
   node.type = 'button';
   return node;
 };
+function timeAgo(ms: number) {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 5) return 'az imént';
+  if (seconds < 60) return `${seconds} másodperce`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes} perce` : `${Math.floor(minutes / 60)} órája`;
+}
 const app = document.querySelector<HTMLDivElement>('#app')!;
-let identity = { id: crypto.randomUUID() as string, name: `vandor-${Math.floor(Math.random() * 9000 + 1000)}` };
+let identity = { id: crypto.randomUUID() as string, name: '' };
+let identityReady = false;
 let storageAvailable = true;
 try {
-  const saved: unknown = JSON.parse(localStorage.getItem('ephemeral.identity.v1') || 'null');
+  const saved: unknown = JSON.parse(sessionStorage.getItem('csittchat.identity.session.v1') || 'null');
   if (saved && typeof saved === 'object' && 'id' in saved && 'name' in saved && isUuid(saved.id) && validText(saved.name, 40)) {
     identity = { id: saved.id, name: saved.name };
+    identityReady = true;
   }
-  localStorage.setItem('ephemeral.identity.v1', JSON.stringify(identity));
+  // Retire the previous persistent identity; names now belong to this tab session.
+  localStorage.removeItem('ephemeral.identity.v1');
 } catch { storageAvailable = false; }
 const sessionId = crypto.randomUUID();
 let store: ChatStore | undefined;
 let selected: string | null = null;
 let renderPending = false;
 let writeBusy = false;
+let roomEnteredAt = 0;
 let lastWrite = 0;
 let lastMessageSignature = '';
 const drafts = new Map<string, string>();
@@ -45,23 +56,31 @@ const status = el('div', 'network-status');
 const statusDot = el('span', 'status-dot');
 const statusText = el('span', '', 'Helyi tárhely indítása…');
 status.append(statusDot, statusText);
-headerInner.append(brand, status); header.append(headerInner);
+const headerActions = el('div', 'header-actions');
+const currentName = el('span', 'current-name');
+currentName.title = 'A beceneved erre a munkamenetre szól, itt nem módosítható.';
+const aboutButton = button('Tudnivalók', 'ghost-button');
+headerActions.append(status, currentName, aboutButton);
+headerInner.append(brand, headerActions); header.append(headerInner);
 
 const main = el('main', 'page');
 const intro = el('section', 'intro');
 const introCopy = el('div');
-introCopy.append(el('p', 'eyebrow', 'EGY KIS KÍSÉRLET A KÖZÖS JELENLÉTRE'), el('h1', '', 'Egy kis idő, együtt.'), el('p', 'intro-description', 'Közös tér futó gondolatoknak és nyílt beszélgetéseknek.\nRegisztráció nélkül. Egy kis időre. Itt és most.'));
-const experiment = el('div', 'experiment-note');
-experiment.append(el('span', 'experiment-icon', '↗'), el('span', '', 'Böngészők között.\nEmberek között.'));
-intro.append(introCopy, experiment);
+introCopy.append(el('p', 'eyebrow', 'NYILVÁNOS · IDEIGLENES · KÖZVETLEN'), el('h1', '', 'Egy kis idő, együtt.'), el('p', 'intro-description', 'Válassz egy szobát, vagy indíts beszélgetést. Az üzenetek 30 percig maradnak.'));
+const lobbyJoin = el('a', 'primary-button', 'Belépek a #main szobába →'); lobbyJoin.href = '#room/main';
+const lobbyStats = el('div', 'lobby-stats');
+introCopy.append(lobbyJoin, lobbyStats);
+intro.append(introCopy);
 
 const identityBar = el('div', 'identity-bar');
 const identityForm = el('form', 'identity-form');
 const identityLabel = el('label', '', 'A beceneved'); identityLabel.htmlFor = 'display-name';
 const nameInput = el('input'); nameInput.id = 'display-name'; nameInput.name = 'display-name'; nameInput.maxLength = 40; nameInput.required = true; nameInput.value = identity.name; nameInput.setAttribute('autocomplete', 'nickname');
-const saveName = button('Név mentése', 'text-button'); saveName.type = 'submit';
-identityForm.append(el('span', 'avatar', '☺'), identityLabel, nameInput, saveName);
-const localNote = el('span', 'local-note', storageAvailable ? 'Csak egy becenév. Ennyi az egész.' : 'Nincs helyi tárhely · a neved csak erre a látogatásra szól.');
+nameInput.placeholder = 'Milyen néven csatlakozol?';
+const saveName = button('Belépés →', 'primary-button'); saveName.type = 'submit';
+const identityError = el('p', 'form-error'); identityError.setAttribute('role', 'alert');
+identityForm.append(identityLabel, nameInput, identityError, saveName);
+const localNote = el('p', 'local-note', storageAvailable ? 'A neved ebben a böngészőfülben frissítés után is megmarad. Új munkamenetben új nevet választhatsz.' : 'A böngésző nem engedélyezi a mentést. Frissítéskor újra nevet kell megadnod.');
 identityBar.append(identityForm, localNote);
 const notice = el('p', 'notice'); notice.setAttribute('role', 'status'); notice.hidden = true;
 function notify(message: string) { notice.textContent = message; notice.hidden = false; }
@@ -71,13 +90,14 @@ const square = el('section', 'square');
 const squareHeading = el('div', 'section-heading');
 const squareTitle = el('div');
 const roomCount = el('span', 'count', '01');
-const squareH2 = el('h2', '', 'Közös tér'); squareH2.append(roomCount);
-squareTitle.append(squareH2, el('p', 'muted', 'Csatlakozz egy beszélgetéshez, vagy indíts egyet.'));
+const squareH2 = el('h2', '', 'Szobák'); squareH2.append(roomCount);
+squareTitle.append(squareH2, el('p', 'muted', 'Minden beszélgetés nyilvános.'));
 const createButton = button('+ Új szoba', 'primary-button'); createButton.disabled = true;
 squareHeading.append(squareTitle, createButton);
 const roomList = el('div', 'room-list');
 const squareFooter = el('div', 'square-footnote');
-squareFooter.append(el('span', '', 'Minden szoba nyilvános. Bárki csatlakozhat.'), el('span', 'mono', 'SZOBÁK: 6 ÓRA / ÜZENETEK: 30 PERC'));
+const knownPeople = el('span', '', 'Kapcsolódás…');
+squareFooter.append(knownPeople, el('span', 'mono', 'Szobák: 6 óra · Üzenetek: 30 perc'));
 square.append(squareHeading, roomList, squareFooter);
 
 const roomView = el('section', 'room-view'); roomView.hidden = true;
@@ -86,7 +106,12 @@ const roomHeader = el('div', 'room-header');
 const roomTitle = el('h2');
 const roomMeta = el('p', 'muted mono');
 const roomHeaderCopy = el('div'); roomHeaderCopy.append(roomTitle, roomMeta);
-const roomBadge = el('span', 'public-badge', '↗ NYILVÁNOS SZOBA'); roomHeader.append(roomHeaderCopy, roomBadge);
+const roomBadge = el('span', 'public-badge', 'Nyilvános');
+const reloadHistory = button('Újratöltés', 'ghost-button');
+reloadHistory.title = 'Újraolvassa a már beérkezett előzményeket.';
+const roomActions = el('div', 'room-actions'); roomActions.append(roomBadge, reloadHistory);
+roomHeader.append(roomHeaderCopy, roomActions);
+const historyStatus = el('p', 'history-status'); historyStatus.setAttribute('role', 'status');
 const messageList = el('div', 'messages'); messageList.setAttribute('role', 'log'); messageList.setAttribute('aria-label', 'Beszélgetés'); messageList.setAttribute('aria-live', 'polite');
 const composer = el('form', 'composer');
 const messageLabel = el('label', 'sr-only', 'Üzenet'); messageLabel.htmlFor = 'message';
@@ -96,17 +121,30 @@ const characterCount = el('span', 'muted mono', '0 / 2000');
 const sendButton = button('Küldés ↗', 'primary-button'); sendButton.type = 'submit';
 composerBottom.append(characterCount, sendButton);
 composer.append(messageLabel, messageInput, composerBottom);
-roomView.append(back, roomHeader, messageList, composer, el('p', 'composer-hint', 'Enter: küldés · Shift + Enter: új sor · 30 perc után eltűnik'));
+roomView.append(back, roomHeader, historyStatus, messageList, composer, el('p', 'composer-hint', 'Enter: küldés · Shift + Enter: új sor · 30 perc után eltűnik'));
 
 const privacy = el('aside', 'privacy-note');
 privacy.append(el('span', 'privacy-icon', '◷'), el('p', '', 'Az üzenetek a hivatalos alkalmazásban ideiglenesek, de más résztvevők elmenthetik vagy rögzíthetik őket.'));
-const footer = el('footer', 'site-footer');
-const footerCopy = el('div'); footerCopy.append(el('span', 'footer-brand', 'CsittChat'), el('span', 'muted', 'Egy hely, egy kis időre.'));
-const about = el('details', 'about');
-about.append(el('summary', '', 'Hogyan működik? ↗'), el('p', '', 'A böngésződ tárolja a nyilvános szobákat és üzeneteket, és GenosDB, illetve WebRTC segítségével osztja meg őket más böngészőkkel. A közvetítő szerverek a kapcsolat felépítését segítik, nem a beszélgetéseket tárolják. A szobák 6 óráig, az üzenetek 30 percig élnek. A #main szoba mindig nyitva marad. A létszám becsült, a nevek nem hitelesítettek. Az elérhetőség attól függ, hogy más résztvevők böngészői elérhetők-e.'));
-footer.append(footerCopy, about);
-main.append(intro, identityBar, notice, square, roomView, privacy, footer);
-app.append(header, main);
+const sidebar = el('aside', 'sidebar'); sidebar.setAttribute('aria-label', 'Nyilvános szobák');
+sidebar.append(square);
+const content = el('div', 'content'); content.append(intro, roomView);
+main.append(sidebar, content);
+const banner = el('div', 'banner'); banner.append(notice);
+app.append(header, banner, main, privacy);
+
+const identityDialog = el('dialog', 'name-dialog');
+identityDialog.setAttribute('aria-labelledby', 'name-dialog-title');
+const identityHeading = el('h2', '', 'Hogy szólíthatunk?'); identityHeading.id = 'name-dialog-title';
+identityDialog.append(el('span', 'dialog-symbol', '#'), identityHeading, el('p', 'muted', 'Válassz egy becenevet a beszélgetéshez. Belépés után ebben a munkamenetben nem módosítható.'), identityBar);
+identityDialog.addEventListener('cancel', event => event.preventDefault());
+app.append(identityDialog);
+
+const about = el('dialog', 'about-dialog'); about.setAttribute('aria-labelledby', 'about-title');
+const aboutHeading = el('h2', '', 'Egy kis időre. Nyilvánosan.'); aboutHeading.id = 'about-title';
+const closeAbout = button('Rendben', 'primary-button');
+about.append(aboutHeading, el('p', '', 'A szobák 6 óráig, az üzenetek 30 percig élnek. A #main mindig nyitva marad. Csak a még le nem járt, a böngésződben tárolt vagy elérhető résztvevőktől átvett üzenetek jelennek meg.'), el('p', '', 'A létszám becsült, a becenevek nem hitelesítettek. A böngészők GenosDB és WebRTC segítségével kapcsolódnak. A kapcsolat létrejötte még nem jelenti az összes előzmény megérkezését.'), el('p', '', 'A becenév a böngészőfül munkamenetéhez tartozik. A böngésző munkamenet-visszaállítása visszahozhatja a nevet is. A névkorlátozás a felület működése, nem hitelesítés.'), el('p', '', 'Más résztvevők elmenthetik vagy rögzíthetik a beszélgetést. A P2P-kapcsolat nem biztosít anonimitást.'), closeAbout);
+app.append(about);
+aboutButton.onclick = () => about.showModal(); closeAbout.onclick = () => about.close();
 
 const dialog = el('dialog', 'create-dialog');
 const createForm = el('form');
@@ -133,16 +171,22 @@ dialog.addEventListener('click', e => { if (e.target === dialog && (e.clientX < 
 
 identityForm.onsubmit = e => {
   e.preventDefault();
+  if (identityReady) return;
   const name = nameInput.value.trim();
-  if (!validText(name, 40)) { notify('Válassz 1–40 karakteres becenevet, sortörés és vezérlőkarakterek nélkül.'); return; }
-  identity.name = name; nameInput.value = name;
-  try { localStorage.setItem('ephemeral.identity.v1', JSON.stringify(identity)); notify('A becenevedet elmentettük ebben a böngészőben.'); }
-  catch { notify('A beceneved megváltozott erre a látogatásra, de a böngésző tárhelye nem érhető el.'); }
+  if (!validText(name, 40)) { identityError.textContent = 'Válassz 1–40 karakteres becenevet, sortörés és vezérlőkarakterek nélkül.'; return; }
+  identity = { id: identity.id, name };
+  identityReady = true;
+  try { sessionStorage.setItem('csittchat.identity.session.v1', JSON.stringify(identity)); }
+  catch { notify('A beceneved most használható, de frissítéskor újra meg kell adnod.'); }
+  nameInput.disabled = true; saveName.disabled = true;
+  identityDialog.close();
+  render();
+  void start();
 };
 
 createForm.onsubmit = async e => {
   e.preventDefault();
-  if (!store || createSubmit.disabled) return;
+  if (!store || !identityReady || createSubmit.disabled) return;
   const title = titleInput.value.trim();
   if (!validText(title, 100)) { createError.textContent = 'Adj meg 1–100 karaktert, sortörés és vezérlőkarakterek nélkül.'; return; }
   createSubmit.disabled = true;
@@ -164,7 +208,7 @@ messageInput.onkeydown = e => {
 };
 composer.onsubmit = async e => {
   e.preventDefault();
-  if (!store || !selected || writeBusy) return;
+  if (!store || !identityReady || !selected || writeBusy) return;
   const roomId = selected;
   const text = messageInput.value.trim();
   const now = Date.now();
@@ -185,7 +229,7 @@ composer.onsubmit = async e => {
 };
 
 async function heartbeat() {
-  if (!store) return;
+  if (!store || !identityReady) return;
   const now = Date.now();
   try { await store.put({ kind: 'presence', id: sessionId, roomId: selected, authorId: identity.id, createdAt: now, expiresAt: now + PRESENCE_TTL }); }
   catch (error) { failed(error); }
@@ -195,13 +239,16 @@ function navigate() {
   if (selected) drafts.set(selected, messageInput.value);
   const id = location.hash.startsWith('#room/') ? location.hash.slice(6) : null;
   selected = isRoomId(id) ? id : null;
-  square.hidden = selected !== null; intro.hidden = selected !== null; roomView.hidden = selected === null;
+  main.classList.toggle('in-room', selected !== null);
+  intro.hidden = selected !== null; roomView.hidden = selected === null;
+  roomEnteredAt = Date.now();
   lastMessageSignature = '';
   messageInput.value = selected ? drafts.get(selected) || '' : '';
   characterCount.textContent = `${messageInput.value.length.toLocaleString('hu-HU')} / 2000`;
-  render(); void heartbeat();
+  render(); void store?.watchRoom(selected); void heartbeat();
 }
 window.addEventListener('hashchange', navigate);
+reloadHistory.onclick = () => { if (store) void store.watchRoom(selected); };
 function scheduleRender() {
   if (renderPending) return;
   renderPending = true;
@@ -215,7 +262,7 @@ function roomCard(id: string) {
   const copy = el('div', 'room-card-copy');
   const titleLine = el('div', 'room-title-line'); const title = el('h3');
   titleLine.append(title);
-  if (id === 'main') titleLine.append(el('span', 'default-badge', 'A KÖZÖS SZOBA'));
+  if (id === 'main') titleLine.append(el('span', 'default-badge', 'Állandó'));
   const activity = el('p', 'room-activity'); copy.append(titleLine, activity);
   const metrics = el('div', 'room-metrics'); const people = el('span'); const time = el('span', 'room-time'); metrics.append(people, time);
   const join = el('a', 'join-button', 'Belépés ↗'); join.href = `#room/${id}`;
@@ -226,23 +273,32 @@ function roomCard(id: string) {
 
 function render() {
   const now = Date.now();
+  currentName.textContent = identityReady ? identity.name : '';
+  currentName.hidden = !identityReady;
   const peers = store?.db.room ? Object.keys(store.db.room.getPeers()).length : 0;
   statusDot.classList.toggle('connected', peers > 0);
-  statusText.textContent = !store ? 'Helyi tárhely indítása…' : !navigator.onLine ? 'Nincs internet · helyben mentve' : peers > 0 ? `${peers} közvetlen kapcsolat` : 'Kapcsolatok keresése…';
+  statusText.textContent = !identityReady ? 'Válassz becenevet' : !store ? 'Helyi tárhely indítása…' : !navigator.onLine ? 'Nincs internet · helyben mentve' : peers > 0 ? `${peers} közvetlen kapcsolat` : 'Kapcsolatok keresése…';
   status.title = 'A közvetlen WebRTC-kapcsolatok száma, nem a hálózat teljes létszáma. Egy kapcsolat önmagában nem igazolja az üzenet kézbesítését.';
   const rooms = [...store?.rooms.values() || []].filter(r => r.expiresAt > now).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   roomCount.textContent = String(rooms.length + 1).padStart(2, '0');
+  const people = store?.participants(undefined, now) || 0;
+  knownPeople.textContent = `Kb. ${people} résztvevő a közös térben`;
+  lobbyStats.textContent = `${rooms.length + 1} nyilvános szoba · kb. ${people} résztvevő`;
   const ids = ['main', ...rooms.map(r => r.id)];
   for (const [id, card] of cards) if (!ids.includes(id)) { card.node.remove(); cards.delete(id); }
   for (const id of ids) {
     const room = store?.rooms.get(id);
     const card = cards.get(id) || roomCard(id);
+    card.node.classList.toggle('active', selected === id);
+    const link = card.node.querySelector('a')!;
+    if (selected === id) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     card.title.textContent = room?.title || '#main';
     const participants = store?.participants(id, now) || 0;
     card.people.textContent = `Kb. ${participants} fő`;
     card.time.textContent = room ? `Még ${duration(room.expiresAt - now)}` : 'Mindig nyitva';
     const recent = store?.visibleMessages(id, now).at(-1);
-    card.activity.textContent = recent ? `Utolsó üzenet óta: ${duration(now - recent.createdAt)}${room ? ` · Szoba kora: ${duration(now - room.createdAt)}` : ''}` : room ? `Szoba kora: ${duration(now - room.createdAt)} · Kezdd te a beszélgetést!` : 'Az ajtó mindig nyitva. Nézz be és köszönj!';
+    const roomAge = room ? `A szoba ${timeAgo(now - room.createdAt)} nyílt` : '';
+    card.activity.textContent = recent ? `Utolsó üzenet: ${timeAgo(now - recent.createdAt)}${room ? ` · ${roomAge}` : ''}` : room ? `${roomAge} · Kezdd te a beszélgetést!` : 'Az ajtó mindig nyitva. Nézz be és köszönj!';
     // Only move nodes when order changes, preserving keyboard focus.
     const index = ids.indexOf(id);
     if (roomList.children[index] !== card.node) roomList.insertBefore(card.node, roomList.children[index] || null);
@@ -252,10 +308,14 @@ function render() {
   const available = selected === 'main' || !!room && room.expiresAt > now;
   roomTitle.textContent = selected === 'main' ? '#main' : room?.title || 'A szoba nem érhető el';
   roomMeta.textContent = available ? `${room ? `Még ${duration(room.expiresAt - now)}` : 'Mindig nyitva'} · ${store?.participants(selected, now) || 0} fő · becsült létszám` : 'A szoba lejárhatott, vagy még nem kapcsolódott olyan résztvevő, akinél megtalálható.';
-  messageInput.disabled = !store || !available;
-  sendButton.disabled = !store || !available || writeBusy;
+  messageInput.disabled = !store || !identityReady || !available;
+  sendButton.disabled = !store || !identityReady || !available || writeBusy;
+  reloadHistory.disabled = !store || store.historyState === 'loading';
   const messages = available ? store?.visibleMessages(selected, now) || [] : [];
-  const signature = `${selected}:${available}:${messages.map(m => m.id).join(',')}`;
+  const historyState = store?.historyState || 'loading';
+  const waiting = !messages.length && now - roomEnteredAt < 15000;
+  historyStatus.textContent = historyState === 'loading' ? 'Előzmények betöltése…' : historyState === 'error' ? 'Az előzményeket nem sikerült beolvasni. Próbáld az újratöltést.' : messages.length ? `${messages.length} ismert üzenet · az utolsó 30 percből` : 'A csatlakozó böngészőktől még érkezhetnek előzmények.';
+  const signature = `${selected}:${available}:${historyState}:${waiting}:${messages.map(m => m.id).join(',')}`;
   if (signature !== lastMessageSignature) {
     const atBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 90;
     const previousScroll = messageList.scrollTop;
@@ -264,7 +324,7 @@ function render() {
     const nodes: HTMLElement[] = [];
     if (!messages.length) {
       const empty = el('div', 'empty-conversation');
-      empty.append(el('span', 'empty-symbol', '↳'), el('h3', '', available ? 'Valahol minden beszélgetés elkezdődik.' : 'Most nincs itt semmi.'), el('p', 'muted', available ? 'Köszönj be, kérdezz valamit. Töltsünk itt egy kis időt!' : 'Térj vissza a közös térre, vagy várd meg, amíg a böngészők szinkronizálnak.'));
+      empty.append(el('span', 'empty-symbol', '↳'), el('h3', '', !available ? 'Most nincs itt semmi.' : historyState === 'loading' || waiting ? 'Várjuk a beszélgetést…' : 'Még nincs ismert üzenet.'), el('p', 'muted', available ? 'Írhatsz közben. Az elérhető, 30 percnél frissebb előzmények automatikusan megjelennek.' : 'Térj vissza a közös térre, vagy várd meg, amíg a böngészők szinkronizálnak.'));
       nodes.push(empty);
     }
     for (const message of messages) {
@@ -288,16 +348,24 @@ async function start() {
     // Runtime URL stays relative to index.html, including GitHub Pages subpaths.
     const url = new URL('./vendor/genosdb/index.js', document.baseURI).href;
     const { gdb } = await import(/* @vite-ignore */ url) as { gdb: typeof GdbFactory };
-    const db: GDB = await gdb(import.meta.env.VITE_CHAT_NETWORK || 'ephemeral-pub-v1', { rtc: { cells: true } });
+    const db: GDB = await gdb(import.meta.env.VITE_CHAT_NETWORK || 'ephemeral-pub-v1', {
+      rtc: { cells: true }, debug: import.meta.env.VITE_GDB_DEBUG === '1',
+    });
     store = new ChatStore(db, scheduleRender, failed);
     await store.start();
     createButton.disabled = false;
-    for (const event of ['peer:join', 'peer:leave', 'mesh:state']) db.room?.on(event, scheduleRender);
+    for (const event of ['peer:leave', 'mesh:state']) db.room?.on(event, scheduleRender);
+    db.room?.on('peer:join', () => {
+      scheduleRender();
+      store?.scheduleHistoryRecovery();
+      if (selected) void store?.watchRoom(selected);
+    });
+    if (db.room && Object.keys(db.room.getPeers()).length) store.scheduleHistoryRecovery();
     navigate();
     setInterval(() => { render(); void store?.sweep(); }, 1000);
     setInterval(() => void heartbeat(), 25000);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); void store?.sweep(); void heartbeat(); } });
-    window.addEventListener('online', () => { render(); void heartbeat(); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); void store?.sweep(); void store?.watchRoom(selected); store?.scheduleHistoryRecovery(); void heartbeat(); } });
+    window.addEventListener('online', () => { render(); void store?.watchRoom(selected); store?.scheduleHistoryRecovery(); void heartbeat(); });
     window.addEventListener('offline', render);
     // Presence expires even when unload cannot finish. No network write is
     // required during page teardown, which also keeps bfcache navigation safe.
@@ -308,4 +376,5 @@ async function start() {
   }
 }
 navigate();
-void start();
+if (identityReady) void start();
+else { identityDialog.showModal(); nameInput.focus(); }
