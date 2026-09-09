@@ -1,0 +1,3 @@
+# Preserve the pinned vendor build byte for byte, including upstream whitespace.
+peer/vendor/** linguist-vendored
+peer/vendor/genossrv.min.js -whitespace

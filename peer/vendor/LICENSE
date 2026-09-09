@@ -1,0 +1,20 @@
+SPDX-License-Identifier: LicenseRef-GenosDB-Proprietary
+
+GenosDB (GDB) License
+Copyright (c) 2024 Esteban Fuster Pozzi
+
+==================================================
+
+TERMS OF USE
+
+The minified production builds of GenosDB (GDB) are provided free of charge ("Freeware") for both personal and commercial use. You are welcome to integrate, distribute, and resell these builds as part of your applications without cost.
+
+The source code for GenosDB is proprietary and is not available under an open-source license. By using this software, you agree that you do not have the right to decompile, reverse-engineer, modify, or otherwise attempt to access the original source code of the core software.
+
+This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages or other liability, whether in an action of contract, tort or otherwise, arising from, out of or in connection with the software or the use or other dealings in the software.
+
+Licensor: Esteban Fuster Pozzi, creator and licensor of GenosDB (GDB).
+
+License Term: This license is perpetual, provided that all terms and conditions herein are continuously met.
+
+Termination: The Licensor may terminate this license immediately upon any material breach by the user. Upon termination, the user must cease all use of the software and any distributed copies.

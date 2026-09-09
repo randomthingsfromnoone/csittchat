@@ -1,0 +1,12 @@
+{
+  "genosdb": "0.34.0",
+  "sha256": {
+    "server.ts": "04f9c5786fd01fefc7171661f177ef66fa0c020d7aa174ddec2e19e2bf79464a",
+    "policy.ts": "7abf6d6feff631a9bb1178120e150e70a0034c854f10006f848fd02898e8e700",
+    "vendor/genossrv.min.js": "1b664a6621f3dae04d4fd44023322e61ab0aa5453db7e01e9d96c91852793228",
+    "vendor/LICENSE": "b250c84548293a690acf342c63f885cb87baefa0ef2093103b4a84b74511212e",
+    "shared/model.ts": "beff7acf8f2f2af66b251c29381f9c6709ee019c2d709bee647a4bc24a30e520",
+    "shared/store.ts": "8a3da848dfd5865f4adbca12e5da882f7d94b3b8b590c37ff3839b3957a13997",
+    "shared/verify.mjs": "2acfabcbe1e3377c07531dcc7f897afcee75032299ce00e48f995a5014a6d23a"
+  }
+}

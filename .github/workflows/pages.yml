@@ -18,6 +18,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run peer:check
       - run: npm test
       - run: npm run build
         env:

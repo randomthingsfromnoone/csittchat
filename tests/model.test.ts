@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CLOCK_SKEW, MESSAGE_TTL, ROOM_TTL, PRESENCE_TTL, parseRecord, nodeId, isVisibleMessage, type RoomRecord, type MessageRecord } from '../src/model.ts';
+import { CLOCK_SKEW, MESSAGE_TTL, ROOM_TTL, PRESENCE_TTL, parseRecord, nodeId, isVisibleMessage, renewRoom, mergeRoom, type RoomRecord, type MessageRecord } from '../src/model.ts';
 
 const now = Date.UTC(2026, 8, 8);
 const id = '019a1111-1111-4111-8111-111111111111';
@@ -43,4 +43,38 @@ test('reject timestamp inflation and non-deterministic TTLs; accept stale record
   ]) assert.equal(parseRecord(nodeId(message), value, now), null);
   assert.equal(parseRecord(nodeId(room), { ...room, lastActivityAt: now + 1 }, now), null);
   assert.ok(parseRecord(nodeId(message), message, now + ROOM_TTL));
+});
+
+test('room expiry follows validated activity while message TTL remains fixed', () => {
+  const sentAt = now + ROOM_TTL - 1;
+  const sent = { ...message, createdAt: sentAt, expiresAt: sentAt + MESSAGE_TTL };
+  const renewed = renewRoom(room, sent, sentAt);
+  assert.equal(renewed.expiresAt, sentAt + ROOM_TTL);
+  assert.equal(renewed.createdAt, room.createdAt);
+  assert.ok(parseRecord(nodeId(renewed), renewed, sentAt));
+  assert.equal(isVisibleMessage(sent, new Map([[id, renewed]]), sentAt + MESSAGE_TTL - 1), true);
+  assert.equal(isVisibleMessage(sent, new Map([[id, renewed]]), sentAt + MESSAGE_TTL), false);
+  for (const lastActivityAt of [now - 1, sentAt + CLOCK_SKEW + 1, NaN, Infinity, sentAt + .5]) {
+    assert.equal(parseRecord(nodeId(room), { ...room, lastActivityAt, expiresAt: lastActivityAt + ROOM_TTL }, sentAt), null);
+  }
+});
+
+test('replays, late arrivals and conflicting room metadata cannot restart the timer', () => {
+  const sentAt = now + 1000;
+  const sent = { ...message, createdAt: sentAt, expiresAt: sentAt + MESSAGE_TTL };
+  const renewed = renewRoom(room, sent, sentAt);
+  assert.equal(renewRoom(renewed, sent, sentAt + 1000), renewed);
+  assert.equal(renewRoom(renewed, message, sentAt + 1000), renewed);
+  assert.equal(mergeRoom(renewed, room), renewed);
+  assert.equal(mergeRoom(room, renewed), renewed);
+  assert.equal(mergeRoom(room, { ...renewed, title: 'Changed title' }), room);
+  assert.equal(renewRoom(room, sent, now + ROOM_TTL), room);
+  assert.equal(renewRoom(room, { ...sent, createdAt: room.expiresAt }, room.expiresAt - 1), room);
+  assert.equal(renewRoom(room, { ...sent, roomId: 'main' }, sentAt), room);
+});
+
+test('receipts have bounded text, a valid message ID and cannot outlive the message window', () => {
+  const receipt = { kind: 'receipt', id, messageId: authorId, roomId: 'main', authorId, authorName: 'Bob', createdAt: now, expiresAt: now + MESSAGE_TTL - 1000 };
+  assert.ok(parseRecord(`receipt:${id}`, receipt, now));
+  for (const value of [{ ...receipt, messageId: 'bad' }, { ...receipt, expiresAt: now }, { ...receipt, expiresAt: now + MESSAGE_TTL + 1 }, { ...receipt, authorName: 'x'.repeat(41) }]) assert.equal(parseRecord(`receipt:${id}`, value, now), null);
 });

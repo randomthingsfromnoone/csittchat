@@ -1,6 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 
+async function setTime(page: Page, now: number) {
+  await page.clock.setFixedTime(now);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+}
+
 async function ready(page: Page, name = 'Vendég') {
   await page.goto('./');
   await enterName(page, name);
@@ -39,14 +44,14 @@ test('create, send hostile-looking text safely, persist and expire records', asy
   await expect(page.getByRole('dialog', { name: 'Hogy szólíthatunk?' })).not.toBeVisible();
   await expect(page.locator('.message-text')).toHaveText('Hello <script>alert(1)</script> & everyone');
   const start = Date.now();
-  await page.clock.setFixedTime(start + 31 * 60 * 1000);
+  await setTime(page, start + 31 * 60 * 1000);
   await expect(page.locator('.message')).toHaveCount(0);
   await expect(page.locator('.empty-conversation')).toBeVisible();
   await page.waitForTimeout(1000);
   await page.reload();
   await expect(page.getByRole('button', { name: 'Küldés' })).toBeEnabled();
   await expect(page.locator('.message')).toHaveCount(0);
-  await page.clock.setFixedTime(start + 7 * 60 * 60 * 1000);
+  await setTime(page, start + 7 * 60 * 60 * 1000);
   await expect(page.getByRole('heading', { name: 'A szoba nem érhető el' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Küldés' })).toBeDisabled();
   await page.getByRole('link', { name: 'Vissza a közös térre' }).click();
@@ -72,6 +77,29 @@ test('mobile layout, empty room and unavailable deep link', async ({ page }) => 
   await expect(page.getByRole('heading', { name: 'A szoba nem érhető el' })).toBeVisible();
 });
 
+test('a new message restarts six hours and the renewal survives message expiry and reload', async ({ page }) => {
+  await ready(page, 'Aktív vendég');
+  await createRoom(page, 'Hosszabbodó szoba');
+  const start = Date.now();
+  await setTime(page, start + 5 * 60 * 60 * 1000);
+  await expect(page.locator('.room-header .muted')).toContainText('Még 1 óra');
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Küldés' })).toBeEnabled();
+  await send(page, 'Maradjunk még!');
+  await expect(page.locator('.room-header .muted')).toContainText('Még 6 óra');
+  await page.waitForTimeout(1000);
+  await setTime(page, start + 7 * 60 * 60 * 1000);
+  await expect(page.locator('.message')).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Küldés' })).toBeEnabled();
+  await expect(page.locator('.room-header .muted')).toContainText('Még 4 óra');
+  await setTime(page, start + 11 * 60 * 60 * 1000 - 1000);
+  await expect(page.getByRole('button', { name: 'Küldés' })).toBeEnabled();
+  await setTime(page, start + 11 * 60 * 60 * 1000);
+  await expect(page.getByRole('heading', { name: 'A szoba nem érhető el' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Küldés' })).toBeDisabled();
+});
+
 test('independent contexts discover rooms and exchange messages over real WebRTC', async ({ browser }) => {
   test.skip(process.env.TEST_P2P !== '1', 'Opt in with TEST_P2P=1; requires reachable public discovery relays and WebRTC.');
   test.setTimeout(150000);
@@ -79,7 +107,7 @@ test('independent contexts discover rooms and exchange messages over real WebRTC
   const b = await browser.newContext();
   try {
     const alice = await a.newPage(); const bob = await b.newPage();
-    await Promise.all([ready(alice), ready(bob)]);
+    await Promise.all([ready(alice, 'Alice'), ready(bob, 'Bob')]);
     await createRoom(alice, 'Independent browser room');
     await expect(bob.getByRole('heading', { name: 'Independent browser room', exact: true })).toBeVisible({ timeout: 90000 });
     await bob.locator('.room-card').filter({ hasText: 'Independent browser room' }).getByRole('link', { name: 'Belépés a szobába' }).click();
@@ -119,7 +147,7 @@ test('late joiner loads existing main history before any new messages are sent',
     await alice.waitForTimeout(1000);
     const bob = await b.newPage();
     bob.on('console', message => log.push(`bob ${message.type()} ${message.text()}`));
-    await ready(bob);
+    await ready(bob, 'Bob');
     await bob.getByRole('link', { name: 'Belépés a #main szobába' }).click();
     await expect(bob.locator('.message-text')).toContainText(['History written before the other browser joins'], { timeout: 90000 });
     await bob.waitForTimeout(21000); // Both delayed recovery attempts can run.
@@ -179,4 +207,79 @@ test('switching rooms and reloading retains main history', async ({ page }) => {
   await page.waitForTimeout(1000);
   await page.reload();
   await expect(page.locator('.message-text')).toHaveText('A mainben maradó üzenet');
+});
+
+test('reserved names cannot be taken and a persistent account restores with its twelve words', async ({ page, context }) => {
+  await page.goto('./');
+  await page.getByRole('button', { name: 'Új tartós fiók', exact: true }).click();
+  await page.getByLabel('A beceneved', { exact: true }).fill('Tartós Teszt');
+  const words = await page.locator('.recovery-words li').allTextContents();
+  expect(words).toHaveLength(12);
+  await expect(page.getByRole('button', { name: 'Belépés →', exact: true })).toBeDisabled();
+  await page.getByLabel('Elmentettem a 12 szót.').check();
+  await page.getByRole('button', { name: 'Belépés →', exact: true }).click();
+  await expect(page.locator('.current-name')).toHaveText('Tartós Teszt');
+  const other = await context.newPage();
+  await other.goto('./');
+  await other.getByLabel('A beceneved', { exact: true }).fill('  tartós teszt  ');
+  await other.getByRole('button', { name: 'Belépés →', exact: true }).click();
+  await expect(other.getByRole('alert')).toContainText('foglalt');
+  await other.getByRole('button', { name: 'Visszaállítás', exact: true }).click();
+  await other.getByLabel('A 12 helyreállító szó').fill(words.join(' '));
+  await other.getByRole('button', { name: 'Fiók visszaállítása' }).click();
+  await expect(other.locator('.current-name')).toHaveText('Tartós Teszt');
+  await other.getByRole('button', { name: 'Felhasználók', exact: true }).click();
+  await expect(other.getByRole('dialog', { name: 'Felhasználók', exact: true }).getByText('Tartós Teszt', { exact: true })).toBeVisible();
+  await page.locator('.current-name').click();
+  await page.getByRole('button', { name: 'Kijelentkezés' }).click();
+  await expect(page.getByRole('dialog', { name: 'Hogy szólíthatunk?' })).toBeVisible();
+});
+
+test('unread badges stay local and opening a conversation shares a named read receipt', async ({ page, context }) => {
+  await ready(page, 'Számláló Alice');
+  await createRoom(page, 'Olvasatlan teszt');
+  const bob = await context.newPage();
+  await ready(bob, 'Számláló Bob');
+  const card = bob.locator('.room-card').filter({ hasText: 'Olvasatlan teszt' });
+  await expect(card).toBeVisible();
+  await page.bringToFront();
+  await send(page, 'Ezt még csak Alice látja.');
+  await expect(card.locator('.unread-badge')).toHaveText('1');
+  await expect(page.locator('.unread-badge')).toHaveCount(0);
+  await bob.bringToFront();
+  await card.getByRole('link', { name: 'Belépés a szobába', exact: true }).click();
+  await expect(bob.locator('.message-text')).toHaveText('Ezt még csak Alice látja.');
+  await expect(card.locator('.unread-badge')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Látta: 1', exact: true })).toBeVisible();
+  await page.bringToFront();
+  await page.getByRole('button', { name: 'Látta: 1', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Látta', exact: true }).getByText('Számláló Bob', { exact: true })).toBeVisible();
+  await page.getByRole('dialog', { name: 'Látta', exact: true }).getByRole('button', { name: 'Bezárás' }).click();
+  // Headless Chromium can report every target as focused; simulate a hidden tab explicitly.
+  await bob.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForTimeout(800); // Respect the existing 750 ms send limit.
+  await send(page, 'Háttérben még olvasatlan.');
+  await expect(card.locator('.unread-badge')).toHaveText('1');
+  await bob.evaluate(() => {
+    Reflect.deleteProperty(document, 'hidden'); Reflect.deleteProperty(document, 'visibilityState');
+    document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus'));
+  });
+  await bob.bringToFront();
+  await expect(card.locator('.unread-badge')).toHaveCount(0);
+  await bob.reload();
+  await expect(bob.locator('.message-text')).toHaveCount(2);
+  await expect(card.locator('.unread-badge')).toHaveCount(0);
+});
+
+test('registration and restoration never call a central identity API', async ({ page }) => {
+  const identityRequests: string[] = [];
+  page.on('request', request => { if (request.url().includes('identity-api')) identityRequests.push(request.url()); });
+  await ready(page, 'P2P vendég');
+  await page.reload();
+  await expect(page.locator('.current-name')).toHaveText('P2P vendég');
+  expect(identityRequests).toEqual([]);
 });

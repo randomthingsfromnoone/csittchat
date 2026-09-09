@@ -4,3 +4,21 @@ test-results/
 playwright-report/
 .playwright-cli/
 /server-local/
+
+/server/data/
+
+# Local configuration, credentials and runtime state never belong in Git.
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.pem
+*.key
+/peer/data/
+/peer/data-bun/
+/peer/logs/
+/peer/bun
+*.log

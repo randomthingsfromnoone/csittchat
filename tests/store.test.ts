@@ -4,6 +4,131 @@ import type { GDB, MapEvent } from 'genosdb';
 import { ChatStore } from '../src/store.ts';
 import { MESSAGE_TTL, ROOM_TTL, nodeId, type MessageRecord, type RoomRecord } from '../src/model.ts';
 
+function roomFixture(now: number) {
+  const room: RoomRecord = { kind: 'room', id: crypto.randomUUID(), creator: crypto.randomUUID(), title: 'Active room', createdAt: now - ROOM_TTL + 1000, lastActivityAt: now - ROOM_TTL + 1000, expiresAt: now + 1000 };
+  const message: MessageRecord = { kind: 'message', id: crypto.randomUUID(), roomId: room.id, authorId: room.creator, authorName: 'Alice', text: 'Keep talking', createdAt: now, expiresAt: now + MESSAGE_TTL };
+  const graph = new Map<string, RoomRecord | MessageRecord>([[nodeId(room), room]]);
+  let receive: (e: MapEvent) => void = () => {};
+  const db = {
+    async map(options: { query?: { expiresAt?: { $lte: number } } }, callback?: (e: MapEvent) => void) {
+      const values = [...graph.values()].filter(v => !options.query?.expiresAt || v.expiresAt <= options.query.expiresAt.$lte);
+      if (callback) {
+        receive = callback;
+        for (const value of values) callback({ id: nodeId(value), value, action: 'initial', timestamp: now, edges: [] });
+      }
+      return { results: values.map(value => ({ id: nodeId(value), value })) };
+    },
+    async get(id: string) { return { result: graph.has(id) ? { id, value: graph.get(id) } : null }; },
+    async put(value: RoomRecord | MessageRecord, id: string) {
+      graph.set(id, value);
+      receive({ id, value, action: 'updated', timestamp: now, edges: [] });
+      return id;
+    },
+    async remove(id: string) {
+      graph.delete(id);
+      receive({ id, value: null, action: 'removed', timestamp: now, edges: [] });
+    },
+  };
+  const failures: unknown[] = [];
+  const makeStore = () => new ChatStore(db as unknown as GDB, () => {}, error => failures.push(error));
+  return { room, message, graph, db, failures, makeStore };
+}
+
+test('message renewal persists beyond the original deadline, message cleanup and reload', async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const { room, message, graph, makeStore, failures } = roomFixture(now);
+  const store = makeStore();
+  await store.start();
+  await store.put(message);
+  assert.equal(graph.get(nodeId(room))?.expiresAt, now + ROOM_TTL);
+  assert.equal(store.rooms.get(room.id)?.lastActivityAt, now);
+  t.mock.timers.tick(MESSAGE_TTL);
+  await store.sweep();
+  assert.equal(graph.has(nodeId(message)), false);
+  assert.equal(graph.has(nodeId(room)), true);
+  store.stop();
+  const reloaded = makeStore();
+  await reloaded.start();
+  assert.equal(reloaded.rooms.get(room.id)?.expiresAt, now + ROOM_TTL);
+  t.mock.timers.tick(ROOM_TTL - MESSAGE_TTL);
+  await reloaded.sweep();
+  assert.equal(graph.has(nodeId(room)), false);
+  assert.deepEqual(failures, []);
+  reloaded.stop();
+});
+
+test('remote activity and out-of-order room updates retain and persist the latest deadline', async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const { room, message, graph, db, makeStore } = roomFixture(now);
+  const store = makeStore();
+  await store.start();
+  await db.put(message, nodeId(message));
+  await store.sweep();
+  const renewed = graph.get(nodeId(room));
+  await db.put(room, nodeId(room));
+  await store.sweep();
+  assert.deepEqual(graph.get(nodeId(room)), renewed);
+  t.mock.timers.tick(10000);
+  await db.put(message, nodeId(message));
+  await store.sweep();
+  assert.deepEqual(graph.get(nodeId(room)), renewed);
+  assert.equal(store.rooms.get(room.id)?.expiresAt, now + ROOM_TTL);
+  store.stop();
+});
+
+test('renewal failures retry without losing the message or undoing a room deletion', async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const { room, message, graph, db, makeStore, failures } = roomFixture(now);
+  const store = makeStore();
+  await store.start();
+  const put = db.put.bind(db);
+  let fail = true;
+  db.put = async (value, id) => {
+    if (value.kind === 'room' && fail) throw new Error('disk failure');
+    return put(value, id);
+  };
+  await store.put(message);
+  assert.equal(graph.has(nodeId(message)), true);
+  assert.ok(failures.length > 0);
+  fail = false;
+  await store.sweep();
+  assert.equal(graph.get(nodeId(room))?.expiresAt, now + ROOM_TTL);
+  t.mock.timers.tick(1000);
+  fail = true;
+  await store.put({ ...message, id: crypto.randomUUID(), createdAt: now + 1000, expiresAt: now + 1000 + MESSAGE_TTL });
+  await db.remove(nodeId(room));
+  fail = false;
+  await store.sweep();
+  assert.equal(graph.has(nodeId(room)), false);
+  store.stop();
+});
+
+test('sending at expiry cannot revive a room or store a new message', async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const { room, message, graph, makeStore } = roomFixture(now);
+  const store = makeStore();
+  await store.start();
+  t.mock.timers.tick(1000);
+  await assert.rejects(store.put({ ...message, createdAt: now + 1000, expiresAt: now + 1000 + MESSAGE_TTL }), /Room expired/);
+  assert.equal(graph.has(nodeId(message)), false);
+  assert.equal(graph.get(nodeId(room))?.expiresAt, now + 1000);
+  store.stop();
+});
+
+test('cleanup rechecks a room renewed after the expiration snapshot', async () => {
+  const now = Date.now();
+  const { room, db, graph, makeStore } = roomFixture(now);
+  const renewed = { ...room, lastActivityAt: now, expiresAt: now + ROOM_TTL };
+  db.map = async () => ({ results: [{ id: nodeId(room), value: { ...room, expiresAt: now - 1, lastActivityAt: now - 1 - ROOM_TTL, createdAt: now - 1 - ROOM_TTL } }] });
+  graph.set(nodeId(room), renewed);
+  await makeStore().sweep();
+  assert.deepEqual(graph.get(nodeId(room)), renewed);
+});
+
 test('cleanup removes expired nodes, retries failures, and does not depend on current room', async () => {
   const now = Date.now();
   const room: RoomRecord = { kind: 'room', id: crypto.randomUUID(), creator: crypto.randomUUID(), title: 'A room', createdAt: now, expiresAt: now + ROOM_TTL, lastActivityAt: now };
@@ -15,6 +140,7 @@ test('cleanup removes expired nodes, retries failures, and does not depend on cu
   let unsubscribed = false;
   const db = {
     async map(_: unknown, callback?: (e: MapEvent) => void) { if (callback) receive = callback; return { results: [], unsubscribe: () => { unsubscribed = true; } }; },
+    async get() { return { result: null }; },
     async remove(id: string) { if (failOnce) { failOnce = false; throw new Error('disk failure'); } removed.push(id); },
   } as unknown as GDB;
   const store = new ChatStore(db, () => {}, () => { failures++; });
@@ -42,6 +168,7 @@ test('already expired records arriving from offline peers are hidden and removed
   const removed: string[] = [];
   const db = {
     async map(_: unknown, callback?: (e: MapEvent) => void) { callback?.({ id: nodeId(message), value: message, action: 'initial', timestamp: now, edges: [] }); return { results: [] }; },
+    async get() { return { result: null }; },
     async remove(id: string) { removed.push(id); },
   } as unknown as GDB;
   const store = new ChatStore(db, () => {}, () => {});
@@ -56,6 +183,7 @@ test('storage scan cleans records not held in the UI cache', async () => {
   const removed: string[] = [];
   const db = {
     async map(_: unknown, callback?: unknown) { return { results: callback ? [] : [{ id: nodeId(message), value: message }] }; },
+    async get() { return { result: null }; },
     async remove(id: string) { removed.push(id); },
   } as unknown as GDB;
   const store = new ChatStore(db, () => {}, () => {});
@@ -152,4 +280,14 @@ test('peer joins coalesce into two recovery attempts and stop cancels pending wo
   store.stop();
   t.mock.timers.tick(60000);
   assert.equal(replay.mock.callCount(), 2);
+});
+
+test('reader lists deduplicate identities and ignore mismatched or expired receipts', () => {
+  const now = Date.now(); const { room, message } = roomFixture(now);
+  const store = new ChatStore({} as GDB, () => {}, () => {});
+  const reader = crypto.randomUUID();
+  const receipt = { kind: 'receipt' as const, id: crypto.randomUUID(), messageId: message.id, roomId: room.id, authorId: reader, authorName: 'Bob', createdAt: now + 1, expiresAt: message.expiresAt };
+  for (const value of [receipt, { ...receipt, id: crypto.randomUUID(), createdAt: now + 2 }, { ...receipt, id: crypto.randomUUID(), authorId: message.authorId }, { ...receipt, id: crypto.randomUUID(), authorId: crypto.randomUUID(), expiresAt: now + 1000 }, { ...receipt, id: crypto.randomUUID(), authorId: crypto.randomUUID(), roomId: 'main' }]) store.receipts.set(value.id, value);
+  assert.deepEqual(store.readers(message, now + 10), [receipt]);
+  assert.deepEqual(store.readers(message, message.expiresAt), []);
 });

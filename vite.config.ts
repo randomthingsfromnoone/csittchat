@@ -29,7 +29,7 @@ export default defineConfig({
   plugins: [genosAssets()],
   // Keep the local server's source, configuration and data off the dev server.
   // Preserve Vite 8's default deny list when adding the private directory.
-  server: { fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/server-local/**'] } },
+  server: { fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/server-local/**', '**/server/**', '**/peer/**'] } },
   optimizeDeps: { exclude: ['genosdb'] },
   build: { target: 'es2022' },
 });

@@ -1,0 +1,17 @@
+# Only the standalone runtime, license and setup documentation belong here.
+/*
+!/.gitignore
+!/README.md
+!/setup-systemd.sh
+!/server.ts
+!/policy.ts
+!/manifest.json
+!/shared/
+!/vendor/
+/shared/*
+!/shared/model.ts
+!/shared/store.ts
+!/shared/verify.mjs
+/vendor/*
+!/vendor/genossrv.min.js
+!/vendor/LICENSE
