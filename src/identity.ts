@@ -11,6 +11,7 @@ export interface Identity {
   permanent: boolean;
   profile: ProfileRecord;
   secret: string;
+  remember: boolean;
 }
 export interface User {
   id: string;
@@ -18,7 +19,7 @@ export interface User {
   permanent: boolean;
   online: boolean;
 }
-const storageKey = `csittchat.identity.p2p.v1:${chatConfig.network}`;
+export const identityStorageKey = `csittchat.identity.p2p.v1:${chatConfig.network}`;
 export const newWords = () => generateMnemonic(wordlist, 128);
 export async function secretFromWords(value: string) {
   const words = value.normalize('NFKD').trim().toLowerCase().split(/\s+/).join(' ');
@@ -28,29 +29,75 @@ export async function secretFromWords(value: string) {
   return hex(seed.slice(0, 32));
 }
 export const guestSecret = () => hex(crypto.getRandomValues(new Uint8Array(32)));
-export function saveIdentity(identity: Identity) {
+function parseSavedIdentity(raw: string | null): Identity | null {
   try {
-    sessionStorage.setItem(storageKey, JSON.stringify(identity));
-  } catch {
-    /* In-memory login remains available. */
-  }
-}
-export function savedIdentity(): Identity | null {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
-    return value &&
-      /^[a-f0-9]{64}$/.test(value.secret) &&
-      verifyProfile(value.profile) &&
-      value.id === profileId(hex(ed25519.getPublicKey(unhex(value.secret))))
-      ? value
-      : null;
+    const value = JSON.parse(raw || 'null');
+    if (
+      !value ||
+      typeof value.secret !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(value.secret) ||
+      !verifyProfile(value.profile) ||
+      value.profile.id !== value.id ||
+      value.id !== profileId(hex(ed25519.getPublicKey(unhex(value.secret))))
+    )
+      return null;
+    return {
+      id: value.id,
+      name: value.profile.name,
+      permanent: value.profile.permanent,
+      profile: value.profile,
+      secret: value.secret,
+      remember: value.remember !== false,
+    };
   } catch {
     return null;
   }
 }
-export function forgetIdentity() {
+export function saveIdentity(identity: Identity) {
+  let persisted = false;
+  if (identity.remember) {
+    try {
+      localStorage.setItem(identityStorageKey, JSON.stringify(identity));
+      persisted = true;
+    } catch {
+      /* Fall back to this tab's session. */
+    }
+  }
   try {
-    sessionStorage.removeItem(storageKey);
+    sessionStorage.setItem(identityStorageKey, JSON.stringify({ ...identity, persisted }));
+  } catch {
+    /* This tab can still log in. */
+  }
+  return persisted;
+}
+export function persistentIdentity(): Identity | null {
+  try {
+    return parseSavedIdentity(localStorage.getItem(identityStorageKey));
+  } catch {
+    return null;
+  }
+}
+export function savedIdentity(): Identity | null {
+  try {
+    const raw = sessionStorage.getItem(identityStorageKey);
+    const session = parseSavedIdentity(raw);
+    if (session) {
+      // Once persisted, a stale tab copy cannot undo a logout in another tab.
+      if (session.remember && JSON.parse(raw!).persisted === true) return persistentIdentity();
+      return session;
+    }
+  } catch {
+    /* Try persistent storage if session storage is unavailable. */
+  }
+  return persistentIdentity();
+}
+export function forgetIdentity(id?: string) {
+  try {
+    sessionStorage.removeItem(identityStorageKey);
+  } catch {}
+  try {
+    const persisted = persistentIdentity();
+    if (!id || !persisted || persisted.id === id) localStorage.removeItem(identityStorageKey);
   } catch {}
 }
 export async function lookupProfile(
@@ -113,12 +160,18 @@ export async function openIdentity(
   }
   await store.put(profile);
   store.acceptProfile(profile);
-  const identity = { id, name: profile.name, permanent: profile.permanent, profile, secret };
+  const identity = {
+    id,
+    name: profile.name,
+    permanent: profile.permanent,
+    profile,
+    secret,
+    remember: true,
+  };
   // Let near-simultaneous local/remote registrations settle before entering.
   await new Promise((resolve) => setTimeout(resolve, 600));
   const winner = nameOwner(store.profiles.values(), nameKey(profile.name), Date.now());
   if (winner && winner.id !== id)
     throw new Error('Ez a becenév közben foglalttá vált. Válassz másikat.');
-  saveIdentity(identity);
   return identity;
 }

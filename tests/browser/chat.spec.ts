@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, chromium, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 
 async function setTime(page: Page, now: number) {
@@ -15,6 +15,7 @@ async function enterName(page: Page, name = 'Vendég') {
   const dialog = page.getByRole('dialog', { name: 'Hogy szólíthatunk?' });
   if (await dialog.isVisible()) {
     await dialog.getByLabel('A beceneved').fill(name);
+    await dialog.getByLabel('Maradjak bejelentkezve ezen a böngészőn').uncheck();
     await dialog.getByRole('button', { name: 'Belépés' }).click();
   }
 }
@@ -170,7 +171,7 @@ test('late joiner loads existing main history before any new messages are sent',
   }
 });
 
-test('name is chosen once, survives reload and resets in a fresh tab', async ({ page, context }) => {
+test('without remembering, login survives reload but stays confined to its tab', async ({ page, context }) => {
   await page.goto('./');
   const prompt = page.getByRole('dialog', { name: 'Hogy szólíthatunk?' });
   await expect(prompt).toBeVisible();
@@ -213,6 +214,7 @@ test('reserved names cannot be taken and a persistent account restores with its 
   await page.goto('./');
   await page.getByRole('button', { name: 'Új tartós fiók', exact: true }).click();
   await page.getByLabel('A beceneved', { exact: true }).fill('Tartós Teszt');
+  await page.getByLabel('Maradjak bejelentkezve ezen a böngészőn').uncheck();
   const words = await page.locator('.recovery-words li').allTextContents();
   expect(words).toHaveLength(12);
   await expect(page.getByRole('button', { name: 'Belépés →', exact: true })).toBeDisabled();
@@ -282,4 +284,48 @@ test('registration and restoration never call a central identity API', async ({ 
   await page.reload();
   await expect(page.locator('.current-name')).toHaveText('P2P vendég');
   expect(identityRequests).toEqual([]);
+});
+
+
+test('remembered account survives browser restart, opens in new tabs and logs out everywhere', async ({ baseURL }, testInfo) => {
+  const userDataDir = testInfo.outputPath('remembered-browser');
+  let context = await chromium.launchPersistentContext(userDataDir, { headless: true });
+  try {
+    let page = await context.newPage();
+    await page.goto(baseURL!);
+    await page.getByRole('button', { name: 'Új tartós fiók', exact: true }).click();
+    await page.getByLabel('A beceneved').fill('Megjegyzett fiók');
+    await expect(page.getByLabel('Maradjak bejelentkezve ezen a böngészőn')).toBeChecked();
+    await page.getByLabel('Elmentettem a 12 szót.').check();
+    await page.getByRole('button', { name: 'Belépés →', exact: true }).click();
+    await expect(page.locator('.current-name')).toHaveText('Megjegyzett fiók');
+    const identityId = await page.evaluate(() => {
+      const key = Object.keys(localStorage).find(key => key.startsWith('csittchat.identity.p2p.v1:'))!;
+      return JSON.parse(localStorage.getItem(key)!).id;
+    });
+    await context.close();
+    context = await chromium.launchPersistentContext(userDataDir, { headless: true });
+    page = await context.newPage();
+    await page.goto(baseURL!);
+    await expect(page.locator('.current-name')).toHaveText('Megjegyzett fiók');
+    expect(await page.evaluate(() => {
+      const key = Object.keys(sessionStorage).find(key => key.startsWith('csittchat.identity.p2p.v1:'))!;
+      return JSON.parse(sessionStorage.getItem(key)!).id;
+    })).toBe(identityId);
+    const other = await context.newPage();
+    await other.goto(baseURL!);
+    await expect(other.locator('.current-name')).toHaveText('Megjegyzett fiók');
+    await page.locator('.current-name').click();
+    await page.getByRole('button', { name: 'Kijelentkezés', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Hogy szólíthatunk?' })).toBeVisible();
+    await expect(other.getByRole('dialog', { name: 'Hogy szólíthatunk?' })).toBeVisible();
+    await other.reload();
+    await expect(other.getByLabel('A beceneved')).toBeVisible();
+    expect(await other.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('csittchat.identity.p2p.v1:')))).toBe(false);
+    await context.close();
+    context = await chromium.launchPersistentContext(userDataDir, { headless: true });
+    const signedOut = await context.newPage();
+    await signedOut.goto(baseURL!);
+    await expect(signedOut.getByLabel('A beceneved')).toBeVisible();
+  } finally { await context.close(); }
 });

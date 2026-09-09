@@ -8,6 +8,7 @@ export function LoginDialog({ client }: { client: ChatClient }) {
   const [name, setName] = useState('');
   const [words, setWords] = useState('');
   const [saved, setSaved] = useState(false);
+  const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   function choose(next: typeof mode) {
@@ -28,6 +29,7 @@ export function LoginDialog({ client }: { client: ChatClient }) {
         mode === 'restore' ? '' : name,
         mode === 'create',
         mode === 'restore' ? 'login' : 'register',
+        remember,
       );
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Nem sikerült belépni.');
@@ -137,6 +139,15 @@ export function LoginDialog({ client }: { client: ChatClient }) {
                 />
               </>
             )}
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={remember}
+                disabled={busy}
+                onChange={(event) => setRemember(event.target.checked)}
+              />
+              Maradjak bejelentkezve ezen a böngészőn
+            </label>
             {error && (
               <p className="form-error" role="alert">
                 {error}
@@ -150,7 +161,9 @@ export function LoginDialog({ client }: { client: ChatClient }) {
               {busy ? 'Belépés…' : mode === 'restore' ? 'Fiók visszaállítása' : 'Belépés →'}
             </button>
           </form>
-          <p className="local-note">A belépés ebben a böngészőfülben frissítés után is megmarad.</p>
+          <p className="local-note">
+            Bekapcsolva a belépés a böngésző bezárása után is megmarad. Közös gépen kapcsold ki.
+          </p>
         </>
       )}
     </Dialog>
@@ -185,6 +198,11 @@ export function AccountDialog({ client, close }: { client: ChatClient; close: ()
         {client.identity?.permanent
           ? 'Tartós fiók. A neved offline is foglalt. Másik böngészőben a Visszaállítás gombbal és a 12 szavaddal léphetsz be.'
           : 'Vendégként vagy itt. A neved a kapcsolat megszűnése után legfeljebb 90 másodpercig marad foglalt. Tartós fiókot a belépőképernyőn hozhatsz létre.'}
+      </p>
+      <p className="local-note">
+        {client.identity?.remember
+          ? 'A böngésző megjegyzi a belépésedet. A kijelentkezés törli a mentett belépést a többi megnyitott, megjegyzett munkamenetből is.'
+          : 'A belépés csak ebben a böngészőfülben marad meg.'}
       </p>
       <button className="primary-button" onClick={() => client.logout()}>
         Kijelentkezés

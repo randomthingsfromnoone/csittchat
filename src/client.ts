@@ -17,6 +17,8 @@ import {
   forgetIdentity,
   openIdentity,
   savedIdentity,
+  persistentIdentity,
+  identityStorageKey,
   saveIdentity,
   assertNameAvailable,
   type Identity,
@@ -59,6 +61,8 @@ export class ChatClient {
   private sessionId = crypto.randomUUID();
   private lastWrite = 0;
   private refreshing = false;
+  private restoringIdentity: Identity | null = null;
+  private persistedLogin = false;
   private receiptQueue = new Map<string, MessageRecord>();
   private postingReceipts = false;
   private startPromise?: Promise<void>;
@@ -78,10 +82,10 @@ export class ChatClient {
         Date.now(),
       );
       if (winner && winner.id !== this.identity.id) {
+        forgetIdentity(this.identity.id);
         this.identity = null;
         this.read = undefined;
         this.receiptQueue.clear();
-        forgetIdentity();
         this.notice = 'Szinkronizáláskor korábbi névfoglalás érkezett. Válassz másik becenevet.';
       }
     }
@@ -126,10 +130,25 @@ export class ChatClient {
       this.cleanup.push(() => target.removeEventListener(event, fn));
     };
     listen(window, 'hashchange', this.navigate);
-    listen(window, 'storage', () => {
+    const storageChanged = (event: StorageEvent) => {
+      const identity = this.identity || this.restoringIdentity;
+      if (
+        (event.key === identityStorageKey || event.key === null) &&
+        identity &&
+        (this.identity ? this.persistedLogin : identity.remember) &&
+        persistentIdentity()?.id !== identity.id
+      ) {
+        this.identity = null;
+        this.restoringIdentity = null;
+        forgetIdentity(identity.id);
+        location.reload();
+        return;
+      }
       this.read?.merge();
       this.changed();
-    });
+    };
+    window.addEventListener('storage', storageChanged);
+    this.cleanup.push(() => window.removeEventListener('storage', storageChanged));
     listen(window, 'online', () => {
       void this.refreshIdentity();
       this.store?.scheduleHistoryRecovery();
@@ -154,36 +173,47 @@ export class ChatClient {
       clearInterval(heartbeat);
     });
     const saved = savedIdentity();
+    this.restoringIdentity = saved;
     this.starting = true;
     this.changed();
     void this.start()
       .then(async () => {
-        if (saved)
-          await this.enter(
-            await openIdentity(this.store!, saved.secret, '', false, 'login', saved.profile),
+        if (saved) {
+          const restored = await openIdentity(
+            this.store!,
+            saved.secret,
+            '',
+            false,
+            'login',
+            saved.profile,
           );
+          if (savedIdentity()?.id === saved.id)
+            await this.enter({ ...restored, remember: saved.remember });
+        }
       })
       .catch(this.fail)
       .finally(() => {
+        this.restoringIdentity = null;
         this.starting = false;
         this.changed();
       });
   }
-  async login(secret: string, name: string, permanent: boolean, action: string) {
+  async login(secret: string, name: string, permanent: boolean, action: string, remember = true) {
     await this.start();
-    await this.enter(await openIdentity(this.store!, secret, name, permanent, action));
+    await this.enter({
+      ...(await openIdentity(this.store!, secret, name, permanent, action)),
+      remember,
+    });
   }
 
   async enter(identity: Identity) {
     this.identity = identity;
+    this.persistedLogin = saveIdentity(identity);
     let storage: Storage | undefined;
     try {
       storage = localStorage;
     } catch {}
-    this.read = new ReadState(
-      `csittchat.read.v1:${chatConfig.network}:${identity.id}`,
-      storage,
-    );
+    this.read = new ReadState(`csittchat.read.v1:${chatConfig.network}:${identity.id}`, storage);
     this.notice = '';
     this.changed();
     await this.start();
@@ -258,7 +288,11 @@ export class ChatClient {
       await this.store!.put(identity.profile);
       this.store!.acceptProfile(identity.profile);
       if (this.identity !== identity) return;
-      saveIdentity(identity);
+      if (this.persistedLogin && savedIdentity()?.id !== identity.id) {
+        this.logout();
+        return;
+      }
+      this.persistedLogin = saveIdentity(identity);
       this.notice = '';
       if (!this.store) await this.start();
       await this.heartbeat();
@@ -426,8 +460,11 @@ export class ChatClient {
     }
   }
   logout() {
-    forgetIdentity();
-    // Reload discards session keys, subscriptions and any in-memory account data.
+    const id = this.identity?.id;
+    this.identity = null;
+    this.restoringIdentity = null;
+    forgetIdentity(id);
+    // Reload discards subscriptions and any remaining in-memory account data.
     location.reload();
   }
 }
