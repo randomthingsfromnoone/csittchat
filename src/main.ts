@@ -348,8 +348,12 @@ async function start() {
     // Runtime URL stays relative to index.html, including GitHub Pages subpaths.
     const url = new URL('./vendor/genosdb/index.js', document.baseURI).href;
     const { gdb } = await import(/* @vite-ignore */ url) as { gdb: typeof GdbFactory };
+    const relayUrls = (import.meta.env.VITE_CHAT_RELAYS || '').split(',').map((url: string) => url.trim()).filter(Boolean);
+    if (relayUrls.some((url: string) => !/^wss:\/\//.test(url) && !/^ws:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/.test(url))) {
+      throw new Error('VITE_CHAT_RELAYS: use wss:// URLs (ws:// is allowed only on localhost).');
+    }
     const db: GDB = await gdb(import.meta.env.VITE_CHAT_NETWORK || 'ephemeral-pub-v1', {
-      rtc: { cells: true }, debug: import.meta.env.VITE_GDB_DEBUG === '1',
+      rtc: { cells: true, ...(relayUrls.length ? { relayUrls } : {}) }, debug: import.meta.env.VITE_GDB_DEBUG === '1',
     });
     store = new ChatStore(db, scheduleRender, failed);
     await store.start();

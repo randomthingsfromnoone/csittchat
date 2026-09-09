@@ -20,6 +20,9 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+        env:
+          VITE_CHAT_RELAYS: ${{ vars.VITE_CHAT_RELAYS }}
+          VITE_CHAT_NETWORK: ${{ vars.VITE_CHAT_NETWORK }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
