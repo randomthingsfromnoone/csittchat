@@ -23,7 +23,7 @@ if [[ $("$csittchat_bun" --version) != 1.4.2 ]]; then
   echo 'Ehhez a kiadáshoz Bun 1.4.2 szükséges.' >&2
   exit 1
 fi
-csittchat_files=(server.ts policy.ts shared/model.ts shared/store.ts shared/verify.mjs vendor/genossrv.min.js vendor/LICENSE manifest.json)
+csittchat_files=(server.ts config.ts policy.ts shared/config.ts shared/model.ts shared/store.ts shared/verify.mjs vendor/genossrv.min.js vendor/LICENSE manifest.json)
 for csittchat_file in "${csittchat_files[@]}"; do
   test -f "$csittchat_source/$csittchat_file" || { echo "Hiányzó fájl: $csittchat_file" >&2; exit 1; }
 done
@@ -34,7 +34,7 @@ done
   const crypto = require("node:crypto");
   const root = process.argv[1];
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json")));
-  for (const file of ["server.ts", "policy.ts", "shared/model.ts", "shared/store.ts", "shared/verify.mjs", "vendor/genossrv.min.js", "vendor/LICENSE"]) {
+  for (const file of ["server.ts", "config.ts", "policy.ts", "shared/config.ts", "shared/model.ts", "shared/store.ts", "shared/verify.mjs", "vendor/genossrv.min.js", "vendor/LICENSE"]) {
     const actual = crypto.createHash("sha256").update(fs.readFileSync(path.join(root, file))).digest("hex");
     if (actual !== manifest.sha256[file]) throw new Error(`Eltérő ellenőrzőösszeg: ${file}`);
   }
@@ -55,8 +55,6 @@ User=csittchat-peer
 Group=csittchat-peer
 WorkingDirectory=/var/lib/csittchat-peer
 ExecStart=/opt/csittchat-peer/bin/bun /opt/csittchat-peer/app/server.ts
-EnvironmentFile=/etc/csittchat-peer.env
-Environment=NODE_ENV=production
 StateDirectory=csittchat-peer
 StateDirectoryMode=0700
 UMask=0077
@@ -100,7 +98,7 @@ fi
 if ! getent passwd csittchat-peer >/dev/null; then
   useradd --system --user-group --home-dir /var/lib/csittchat-peer --no-create-home --shell /usr/sbin/nologin csittchat-peer
 fi
-# Validate everything before stopping the running peer. Data/configuration stay in place.
+# Validate everything before stopping the running peer. Data stay in place.
 install -d -m 0755 /opt/csittchat-peer/bin /opt/csittchat-peer/app
 install -m 0755 "$csittchat_bun" /opt/csittchat-peer/bin/bun.next
 mkdir "$csittchat_tmp/check"
@@ -119,19 +117,6 @@ fi
 for csittchat_file in "${csittchat_files[@]}"; do
   install -D -m 0644 "$csittchat_source/$csittchat_file" "/opt/csittchat-peer/app/$csittchat_file"
 done
-if [[ ! -e /etc/csittchat-peer.env ]]; then
-  install -m 0600 /dev/null /etc/csittchat-peer.env
-  cat > /etc/csittchat-peer.env <<'CONFIG'
-GDB_ROOM=ephemeral-pub-v3
-GDB_RELAY=0
-GDB_RELAY_URLS=
-GDB_DB_PATH=/var/lib/csittchat-peer/chat.sqlite
-PORT=8080
-HEALTH_HOST=127.0.0.1
-HEALTH_PORT=8081
-CLEANUP_INTERVAL_MS=1000
-CONFIG
-fi
 install -m 0644 "$csittchat_tmp/csittchat-peer.service" /etc/systemd/system/csittchat-peer.service
 systemctl daemon-reload
 systemctl enable csittchat-peer.service

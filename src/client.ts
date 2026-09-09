@@ -1,3 +1,4 @@
+import { chatConfig } from './config';
 import type { GDB, gdb as GdbFactory } from 'genosdb';
 import { ChatStore } from './store';
 import {
@@ -180,7 +181,7 @@ export class ChatClient {
       storage = localStorage;
     } catch {}
     this.read = new ReadState(
-      `csittchat.read.v1:${import.meta.env.VITE_CHAT_NETWORK || 'ephemeral-pub-v3'}:${identity.id}`,
+      `csittchat.read.v1:${chatConfig.network}:${identity.id}`,
       storage,
     );
     this.notice = '';
@@ -199,10 +200,7 @@ export class ChatClient {
   private async connect() {
     const url = new URL('./vendor/genosdb/index.js', document.baseURI).href;
     const { gdb } = (await import(/* @vite-ignore */ url)) as { gdb: typeof GdbFactory };
-    const relayUrls = (import.meta.env.VITE_CHAT_RELAYS || '')
-      .split(',')
-      .map((url: string) => url.trim())
-      .filter(Boolean);
+    const relayUrls = chatConfig.relayUrls;
     if (
       relayUrls.some(
         (url: string) =>
@@ -210,9 +208,9 @@ export class ChatClient {
       )
     )
       throw new Error('A relayhez wss:// cím szükséges.');
-    const db: GDB = await gdb(import.meta.env.VITE_CHAT_NETWORK || 'ephemeral-pub-v3', {
+    const db: GDB = await gdb(chatConfig.network, {
       rtc: { cells: true, ...(relayUrls.length ? { relayUrls } : {}) },
-      debug: import.meta.env.VITE_GDB_DEBUG === '1',
+      debug: chatConfig.debug,
     });
     this.store = new ChatStore(db, this.changed, this.fail, verifyRecord);
     await this.store.start();

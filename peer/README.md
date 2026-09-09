@@ -27,35 +27,55 @@ felhasználó saját könyvtárához. Külön, belépésre nem használható
 | --- | --- |
 | `/opt/csittchat-peer/app` | Futó szerverkód és mellékelt függőség |
 | `/opt/csittchat-peer/bin/bun` | Bun futtatókörnyezet |
-| `/etc/csittchat-peer.env` | Helyi konfiguráció, csak root számára olvasható |
 | `/var/lib/csittchat-peer` | SQLite-adatbázis és kapcsolódó állományok |
 | systemd journal | Működési napló |
 
-Az első induláskor létrejövő konfiguráció:
+## Beállítások a kódban
 
-```dotenv
-GDB_ROOM=ephemeral-pub-v3
-GDB_RELAY=0
-GDB_RELAY_URLS=
-GDB_DB_PATH=/var/lib/csittchat-peer/chat.sqlite
-PORT=8080
-HEALTH_HOST=127.0.0.1
-HEALTH_PORT=8081
-CLEANUP_INTERVAL_MS=1000
+A beállítások nyilvánosak, nincs köztük jelszó vagy API-kulcs. Nem kell `.env`
+fájl vagy GitHub Actions változó. A közös hálózati értékek a projekt
+`src/config.ts` fájljában vannak; a peer ezek ellenőrzött másolatát kapja a
+`shared/config.ts` fájlban:
+
+```ts
+export const chatConfig = {
+  network: 'ephemeral-pub-v3',
+  relayUrls: [] as string[],
+  debug: false,
+};
 ```
 
-Ez a beállítás a közös nyilvános relayeken keresztül keres peereket. A kliens
-`VITE_CHAT_NETWORK` értéke egyezzen a `GDB_ROOM` értékével. Alapértelmezett
-relayválasztáshoz a kliens `VITE_CHAT_RELAYS` értéke is maradjon üres; saját
-relayek esetén mindkét oldalon közös címeket adj meg. A folyamatosan futó peer
-nem indít saját relayt, az állapotvégpont csak localhoston figyel. A WebRTC
-elérhetősége a hálózattól is függ.
+A `peer/config.ts` a szerver további beállításait tartalmazza:
 
-A konfigurációt `sudoedit /etc/csittchat-peer.env` paranccsal módosíthatod.
-Utána `sudo systemctl restart csittchat-peer` szükséges. Az adatbázis maradjon
+```ts
+export const peerConfig = {
+  ...chatConfig,
+  dbPath: '/var/lib/csittchat-peer/chat.sqlite',
+  relay: false,
+  port: 8080,
+  healthHost: '127.0.0.1',
+  healthPort: 8081,
+  cleanupIntervalMs: 1000,
+};
+```
+
+Az üres relaylista a közös nyilvános relayeken keresztül keres peereket. Saját
+relayekhez a `chatConfig.relayUrls` listát módosítsd, majd frissítsd a klienst és
+a peert együtt. A folyamatosan futó peer nem indít saját relayt, az állapotvégpont
+csak localhoston figyel. A WebRTC elérhetősége a hálózattól is függ.
+
+A konfigurációt fejlesztői gépen módosítsd, utána futtasd az `npm run peer:prepare`
+parancsot, és commitold a frissített fájlokat. Új frontend build és a peer
+újratelepítése szükséges az érvényesítéshez. Az adatbázis maradjon
 `/var/lib/csittchat-peer` alatt: a systemd más rendszerkönyvtárak írását tiltja.
 A `--no-start` kapcsoló telepít és engedélyezi a gépindításkori indulást, de
-leállítva hagyja a szolgáltatást a konfiguráláshoz vagy adatköltöztetéshez.
+leállítva hagyja a szolgáltatást az adatköltöztetéshez.
+
+A korábbi `/etc/csittchat-peer.env` fájlt az új unit már nem tölti be; a telepítő
+nem törli. Ha abban egyedi beállításaid voltak, előbb vezesd át azokat a kódbeli
+konfigurációba. A mellékelt értékek az előző systemd-telepítő alapértékeivel
+megegyeznek. Az SDK a relaybeállításokat belül környezeti változókon keresztül
+fogadja; ezeket a program tölti ki a kódból, nem külső konfigurációból.
 
 ## Frissítés Gitből
 
@@ -68,7 +88,7 @@ curl --fail http://127.0.0.1:8081/healthz
 ```
 
 A telepítő ellenőrzi, majd leállítja és lecseréli a futó kódot, végül újraindítja
-a szolgáltatást. A konfigurációt és az adatbázist megtartja. A puszta `git pull`
+a szolgáltatást. Az adatbázist megtartja; a konfiguráció a frissített kódból érkezik. A puszta `git pull`
 a futó példányt még nem frissíti. Protokollváltáskor a klienst és a peert együtt
 kell frissíteni; a jelenlegi formátum v3.
 
@@ -91,7 +111,7 @@ telepítő megáll. A régi adatbázist nem keresi meg és nem helyezi át autom
    `sudo install -d -m 0700 -o csittchat-peer -g csittchat-peer /var/lib/csittchat-peer`.
    Másold ide a leállított régi adatkönyvtár tartalmát, és állítsd a tulajdonost:
    `sudo chown -R csittchat-peer:csittchat-peer /var/lib/csittchat-peer`.
-6. Ellenőrizd az új `/etc/csittchat-peer.env` hálózatnevét és adatbázisútvonalát,
+6. Ellenőrizd a kódbeli konfiguráció hálózatnevét és adatbázisútvonalát,
    majd `sudo systemctl start csittchat-peer`.
 
 Régi, v3 előtti rekordokhoz ez nem ad formátumkonverziót. Az eredeti mentést

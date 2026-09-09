@@ -4,11 +4,13 @@
 !/README.md
 !/setup-systemd.sh
 !/server.ts
+!/config.ts
 !/policy.ts
 !/manifest.json
 !/shared/
 !/vendor/
 /shared/*
+!/shared/config.ts
 !/shared/model.ts
 !/shared/store.ts
 !/shared/verify.mjs

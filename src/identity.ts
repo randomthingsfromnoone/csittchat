@@ -1,3 +1,4 @@
+import { chatConfig } from './config.ts';
 import { generateMnemonic, mnemonicToSeedWebcrypto, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -17,7 +18,7 @@ export interface User {
   permanent: boolean;
   online: boolean;
 }
-const storageKey = `csittchat.identity.p2p.v1:${import.meta.env?.VITE_CHAT_NETWORK || 'ephemeral-pub-v3'}`;
+const storageKey = `csittchat.identity.p2p.v1:${chatConfig.network}`;
 export const newWords = () => generateMnemonic(wordlist, 128);
 export async function secretFromWords(value: string) {
   const words = value.normalize('NFKD').trim().toLowerCase().split(/\s+/).join(' ');

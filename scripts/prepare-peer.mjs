@@ -11,6 +11,7 @@ if (pkg.version !== '0.34.0') throw new Error('Review server compatibility befor
 const copies = [
   ['node_modules/genosdb/dist/genossrv.min.js', 'vendor/genossrv.min.js'],
   ['node_modules/genosdb/LICENSE', 'vendor/LICENSE'],
+  ['src/config.ts', 'shared/config.ts'],
   ['src/model.ts', 'shared/model.ts'],
   ['src/store.ts', 'shared/store.ts'],
   ['src/peer-proof.mjs', 'shared/verify.mjs'],
@@ -25,7 +26,7 @@ for (const [source, target] of copies) {
   }
 }
 const manifest = { genosdb: pkg.version, sha256: {} };
-for (const target of ['server.ts', 'policy.ts', ...copies.map(([, target]) => target)]) {
+for (const target of ['server.ts', 'config.ts', 'policy.ts', ...copies.map(([, target]) => target)]) {
   manifest.sha256[target] = createHash('sha256').update(await readFile(resolve(peer, target))).digest('hex');
 }
 const content = JSON.stringify(manifest, null, 2) + '\n';
